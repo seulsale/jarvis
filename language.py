@@ -2,7 +2,7 @@
 language.py — which language JARVIS hears and speaks.
 
 One setting, `JARVIS_LANGUAGE`, read here and by nothing else. English is the
-default and is not described in this file at all: every English sentence,
+base and is not described in this file at all: every English sentence,
 cancel word and trigger phrase stays exactly where it was written, beside the
 comment that explains it. A second language is a set of OVERRIDES for those,
 and a caller asks for one like this:
@@ -10,9 +10,9 @@ and a caller asks for one like this:
     speech.say(_t("Cancelled, sir."))                 # a line he speaks
     lang.cancel_words or CANCEL_WORDS                 # a table he matches on
 
-so with the setting unset nothing here changes a single byte of what JARVIS
-says or matches, and a line nobody has translated yet falls back to English
-rather than to silence.
+so in English nothing here changes a single byte of what JARVIS says or
+matches, and a line nobody has translated yet falls back to English rather
+than to silence.
 
 What the setting moves, all of it:
 
@@ -383,8 +383,10 @@ EN = Language(code="en", recognition="en-US")
 
 LANGUAGES = {lang.code: lang for lang in (EN, ES_MX)}
 
-# What an unset (or unrecognised) JARVIS_LANGUAGE means.
-DEFAULT = EN
+# What an unset (or unrecognised) JARVIS_LANGUAGE means. Upstream this is
+# English; this fork speaks Mexican Spanish out of the box, and
+# `JARVIS_LANGUAGE=en` puts the English back.
+DEFAULT = ES_MX
 
 # What a person might reasonably type. "es" is Mexican Spanish because that is
 # the only Spanish there is here; a second variety would have to take it back.

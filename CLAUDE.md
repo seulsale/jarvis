@@ -169,7 +169,8 @@ JARVIS builds**. It is only this repository's own copies that are gone.
 - `FISH_API_KEY` (required) — Fish Audio TTS
 - `FISH_VOICE_ID` (optional) — Voice model ID. Unset, it is the voice of
   `JARVIS_LANGUAGE`
-- `JARVIS_LANGUAGE` (optional, default `en`) — `en` or `es-MX`. Read at
+- `JARVIS_LANGUAGE` (optional, default `es-MX` in this fork; upstream's is
+  `en`) — `en` or `es-MX`. Read at
   start; also settable from the settings panel. `tests/conftest.py` pins it
   to `en` for every test, so a new spoken line needs its translation in
   `language.py` or `tests/test_language.py` fails
@@ -215,7 +216,9 @@ Everything else uses fakes at the subprocess seam — `screencapture`, `sips`,
 needs the network, a real window, or a real `claude`, mark it.
 
 ## Conventions
-- JARVIS personality: British butler, dry wit, economy of language
+- JARVIS personality: British butler, dry wit, economy of language — in
+  Mexican Spanish by default here ("señor", usted), English with
+  `JARVIS_LANGUAGE=en`
 - Max 1-2 sentences per voice response
 - The brain reaches JARVIS's capabilities as MCP tools (`jarvis_mcp.py` ->
   `/internal/tool`), not by parsing `[ACTION:X]` tags out of its reply — that

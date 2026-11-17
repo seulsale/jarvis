@@ -172,7 +172,7 @@ FISH_API_KEY=...            # required, no fallback
 # JARVIS_BRAIN_MODEL=sonnet # optional: the brain's model
 # FISH_VOICE_ID=...         # optional: a different voice
 # USER_NAME=Tony            # optional: what he calls you
-# JARVIS_LANGUAGE=es-MX     # optional: Mexican Spanish instead of English
+# JARVIS_LANGUAGE=en        # optional: English instead of Mexican Spanish
 ```
 
 **Generate the certificates.** These are not optional:
@@ -420,8 +420,8 @@ it and bend it to what you do. The seams are deliberately obvious:
   other than a British butler, this is the only file you need to touch.
 - **His voice** is `tts.py`: one HTTP call, sixty-odd lines. Swap in a
   different provider, or a local model, without touching anything else.
-- **His language** is `JARVIS_LANGUAGE` — `en` (the default) or `es-MX`, in
-  `.env` or under Settings → Language, applied at the next start. It moves
+- **His language** is `JARVIS_LANGUAGE` — `es-MX` (this fork's default) or
+  `en`, in `.env` or under Settings → Language, applied at the next start. It moves
   everything at once: the language Chrome transcribes, the language the brain
   answers in, the lines he speaks without the brain, the words that cancel
   and repeat, and the voice (a Spanish Fish Audio model, unless you set
