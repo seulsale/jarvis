@@ -18,6 +18,10 @@ export interface VoiceInput {
   /** Tear the recogniser down and build a new one, now. For when it is
    *  provably deaf: capturing audio and returning nothing. */
   restart(reason: string): void;
+  /** The language to recognise, as a BCP-47 tag ("en-US", "es-MX"). The
+   *  server says which in its `config` frame; a change while listening
+   *  rebuilds the recogniser, because an engine's language is fixed at start. */
+  setLang(lang: string): void;
 }
 
 const INTERIM_THROTTLE_MS = 200;
@@ -153,11 +157,12 @@ export function createVoiceInput(
   if (!SR) {
     onError("Speech recognition not supported in this browser");
     onMicEvent("no SpeechRecognition in this browser");
-    return { start() {}, stop() {}, pause() {}, resume() {}, restart() {} };
+    return { start() {}, stop() {}, pause() {}, resume() {}, restart() {}, setLang() {} };
   }
 
   let shouldListen = false;
   let paused = false;
+  let lang = "en-US";
   let waitingForRetry = false;
   let retryDelay = 1000;
   let lastInterimAt = 0;
@@ -229,7 +234,7 @@ export function createVoiceInput(
     const sr = new SR();
     sr.continuous = true;
     sr.interimResults = true;
-    sr.lang = "en-US";
+    sr.lang = lang;
     const e: Engine = { sr, running: false, audio: false, startedAt: 0, stoppedAt: 0, retired: false };
 
     sr.onstart = () => {
@@ -466,6 +471,14 @@ export function createVoiceInput(
       setTimeout(() => {
         if (shouldListen && !paused) startSpare();
       }, RESTART_DELAY_MS);
+    },
+    setLang(next: string) {
+      if (!next || next === lang) return;
+      lang = next;
+      // Engines not yet built pick it up in makeEngine(). One already
+      // listening is hearing the wrong language, and nothing it returns is
+      // worth keeping — so the same teardown as a deaf one.
+      this.restart(`language is now ${next}`);
     },
   };
 }

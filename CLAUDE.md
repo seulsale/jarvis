@@ -89,6 +89,12 @@ arbitrary LLM and file content, so everything goes through
 - `speech.py` — Sentence splitting and the scheduler that owns every
   utterance JARVIS speaks
 - `tts.py` — Fish Audio synthesis, one request per sentence chunk
+- `language.py` — `JARVIS_LANGUAGE`. English stays where it is written; a
+  second language (Mexican Spanish) is a set of overrides for the lines he
+  speaks himself (`_t("…")`, English sentence as the key), the tables matched
+  against the user, the recogniser's tag, the default voice and a directive
+  appended to the brain's launch prompt. Tool results returned to the brain
+  are NOT translated — the brain reports them in the user's language
 - `frontend/src/orb.ts` — Three.js particle orb visualization
 - `frontend/src/voice.ts` — Web Speech API + audio playback
 - `frontend/src/main.ts` — Frontend state machine
@@ -161,7 +167,12 @@ JARVIS builds**. It is only this repository's own copies that are gone.
 - `JARVIS_MUTE_MIC_DURING_SPEECH` (optional, default false) — fallback if echo
   rejection is not enough with a given microphone
 - `FISH_API_KEY` (required) — Fish Audio TTS
-- `FISH_VOICE_ID` (optional) — Voice model ID
+- `FISH_VOICE_ID` (optional) — Voice model ID. Unset, it is the voice of
+  `JARVIS_LANGUAGE`
+- `JARVIS_LANGUAGE` (optional, default `en`) — `en` or `es-MX`. Read at
+  start; also settable from the settings panel. `tests/conftest.py` pins it
+  to `en` for every test, so a new spoken line needs its translation in
+  `language.py` or `tests/test_language.py` fails
 - `USER_NAME` (optional) — Your name for JARVIS to use
 - `JARVIS_DATA_DIR` (optional) — Where JARVIS writes everything: the SQLite
   database, memory Markdown, usage.json, the tool token. Defaults to `data/`

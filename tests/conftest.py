@@ -58,6 +58,20 @@ def _never_write_to_the_live_dotenv(monkeypatch, tmp_path):
 
 
 @pytest.fixture(autouse=True)
+def _english_unless_the_test_says_otherwise(monkeypatch):
+    """No test may inherit the developer's `JARVIS_LANGUAGE`.
+
+    `server.py` loads the repository's `.env` into the environment when it is
+    imported, so a developer who runs JARVIS in Spanish would otherwise run
+    the suite in Spanish too — and every assertion on a sentence he speaks is
+    written against the English. Set, not deleted: a reload of `server` puts
+    back whatever `.env` says for a variable that is merely absent. A test of
+    another language still sets the variable itself.
+    """
+    monkeypatch.setenv("JARVIS_LANGUAGE", "en")
+
+
+@pytest.fixture(autouse=True)
 def _never_write_to_the_live_data_dir(monkeypatch, tmp_path):
     """No test may write into the user's real `data/`.
 

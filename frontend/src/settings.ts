@@ -23,6 +23,7 @@ interface StatusResponse {
 interface PreferencesResponse {
   user_name: string;
   honorific: string;
+  language?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -127,6 +128,17 @@ function buildPanelHTML(): string {
             </select>
           </div>
 
+          <div class="settings-field">
+            <label>Language</label>
+            <select id="input-language">
+              <option value="en">English</option>
+              <option value="es-MX">Español (México)</option>
+            </select>
+          </div>
+          <p class="settings-restart-notice" id="language-restart-notice" style="display:none">
+            Restart JARVIS for the new language to take effect.
+          </p>
+
           <div class="settings-actions">
             <button class="settings-btn primary" id="btn-save-prefs">Save Preferences</button>
           </div>
@@ -224,6 +236,11 @@ async function loadPreferences() {
     const honEl = document.getElementById("input-honorific") as HTMLSelectElement;
     if (nameEl) nameEl.value = prefs.user_name || "";
     if (honEl) honEl.value = prefs.honorific || "sir";
+    const langEl = document.getElementById("input-language") as HTMLSelectElement;
+    if (langEl) {
+      langEl.value = prefs.language || "en";
+      langEl.dataset.saved = langEl.value;
+    }
   } catch (e) {
     console.error("[settings] failed to load preferences:", e);
   }
@@ -273,7 +290,17 @@ function wireEvents() {
   document.getElementById("btn-save-prefs")?.addEventListener("click", async () => {
     const user_name = (document.getElementById("input-user-name") as HTMLInputElement).value.trim();
     const honorific = (document.getElementById("input-honorific") as HTMLSelectElement).value;
-    await apiPost("/api/settings/preferences", { user_name, honorific });
+    const langEl = document.getElementById("input-language") as HTMLSelectElement;
+    const language = langEl.value;
+    const result = await apiPost<{ success: boolean }>(
+      "/api/settings/preferences", { user_name, honorific, language });
+    // The running server keeps the language it started in, so a change is
+    // only a change after a restart — say so rather than appear to do nothing.
+    const notice = document.getElementById("language-restart-notice");
+    if (notice && result.success && language !== langEl.dataset.saved) {
+      notice.style.display = "block";
+      langEl.dataset.saved = language;
+    }
     await loadStatus();
   });
 

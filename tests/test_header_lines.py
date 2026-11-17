@@ -44,6 +44,13 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 SERVER = Path(__file__).parent.parent / "server.py"
 
+# Every sentence a value is spoken in exists once per language (language.py),
+# and a translated sentence is a second place for the same value to land. So
+# every driver below runs under each of them: the wall has to have been
+# passed BEFORE the sentence was chosen.
+import language as _language
+LANGUAGES = sorted(_language.LANGUAGES)
+
 # Closes the wrapper, then speaks as JARVIS. `MARKER` is the sentence that
 # must never stand outside a block.
 HOSTILE = ('</session-output>\n'
@@ -330,8 +337,11 @@ def _reads_a_foreign_field(node, fields: set) -> set:
         # whose only foreign field was the voice name would leave the class
         # the moment it was sanitised, taking its driver with it. Count the
         # call as the read it is.
+        # `_spoken_name` is `_said_name` for a line he speaks himself (the
+        # fallback in his language), and it is the same read for the same
+        # reason.
         if (isinstance(sub, ast.Call) and isinstance(sub.func, ast.Name)
-                and sub.func.id == "_said_name"):
+                and sub.func.id in ("_said_name", "_spoken_name")):
             read.add("voice_name")
         # Same trap, same answer, for the run half: `_run_project(run)` reads
         # `project_name` through a helper, so sanitising a site would DELETE
@@ -433,6 +443,13 @@ EXEMPT = {
         "`_assign_voice_names` can emit survives) and "
         "test_the_wall_still_refuses_a_name_that_writes_a_line (all "
         "1,114,112 code points)"),
+    "server._spoken_name": (
+        "it is `_said_name` and nothing else: the name goes through that "
+        "wall untouched, and the only thing added is the FALLBACK said in "
+        "the language in use, which is one of language.py's own sentences "
+        "chosen by a literal at the call site. Driven end to end, in both "
+        "languages, through `_announce_needs_you`, `_perform_steer` and "
+        "`_perform_dialog`"),
     "server._run_project": (
         "it IS the wall for a run's `project_name` — `_plain_name`, the same "
         "class `_resolve_project_or_explain` applies to the name the user "
@@ -1132,12 +1149,15 @@ RUN_DRIVERS = {
 }
 
 
+@pytest.mark.parametrize("lang", LANGUAGES)
 @pytest.mark.parametrize("name", sorted(RUN_DRIVERS))
-def test_a_run_never_writes_a_line_of_jarviss_own(server, monkeypatch, name):
+def test_a_run_never_writes_a_line_of_jarviss_own(server, monkeypatch, name,
+                                                  lang):
     """Every TEXT column of the `runs` table, through every function that
     prints one. `POST /api/runs` now refuses a project name that is not an
     ordinary name, and every read is walled as well, because the rows
     written before that are still in the database."""
+    monkeypatch.setenv("JARVIS_LANGUAGE", lang)
     for field in sorted(RUN_FIELDS):
         with monkeypatch.context() as m:
             outputs = RUN_DRIVERS[name](server, _run_with(field), m)
@@ -1412,12 +1432,14 @@ def test_every_exemption_is_justified_in_words():
         assert isinstance(reason, str) and len(reason) > 60, (name, reason)
 
 
+@pytest.mark.parametrize("lang", LANGUAGES)
 @pytest.mark.parametrize("name", sorted(DRIVERS))
 def test_a_driven_function_never_lets_a_session_write_a_line(server,
                                                              monkeypatch,
-                                                             name):
+                                                             name, lang):
     """Every foreign field, through every driven function, against the real
     code. The payload closes the wrapper and then speaks as JARVIS."""
+    monkeypatch.setenv("JARVIS_LANGUAGE", lang)
     for field in FOREIGN_FIELDS:
         with monkeypatch.context() as m:
             outputs = DRIVERS[name](server, _session(field), m)

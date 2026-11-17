@@ -13,6 +13,8 @@ from dataclasses import dataclass, field
 from enum import IntEnum
 from typing import Awaitable, Callable, Optional
 
+import language
+
 log = logging.getLogger("jarvis.speech")
 
 _ABBREVIATIONS = {
@@ -101,7 +103,8 @@ class SentenceSplitter:
                     continue
                 if text[i] == "." and j - i == 1:
                     word = _word_before(text, i)
-                    if (word.lower() in _ABBREVIATIONS or (len(word) == 1 and word.isupper())
+                    abbreviations = language.current().abbreviations or _ABBREVIATIONS
+                    if (word.lower() in abbreviations or (len(word) == 1 and word.isupper())
                             or word.isdigit()):      # "Mr.", initials "J.", list markers "1."
                         i = k
                         continue
@@ -230,7 +233,10 @@ _TOKEN_RE = re.compile(r"[a-z0-9']+")
 
 
 def _tokens(text: str) -> list[str]:
-    return _TOKEN_RE.findall((text or "").lower())
+    # Folded first, so "detén" is one token and not "det" + "n", and so the
+    # recogniser's "esta" matches the "está" he actually said. See
+    # `language.fold`; ASCII passes through it unchanged.
+    return _TOKEN_RE.findall(language.fold(text or "").lower())
 
 
 # "Say that again" must be replayed, not answered — regenerating an answer
@@ -262,13 +268,35 @@ _REPLAY_TRIGGERS = frozenset({
 })
 
 
+_replay_tables_cache: dict = {}
+
+
+def _replay_tables() -> tuple:
+    """(filler, triggers) for the language in use, as tokens.
+
+    Another language's are written the way a person spells them ("repítelo",
+    "¿cómo?") and `_tokens` folds what it is given, so they are folded once
+    here rather than left to miss on every accent.
+    """
+    lang = language.current()
+    if not lang.replay_triggers:
+        return _REPLAY_FILLER, _REPLAY_TRIGGERS
+    if lang.code not in _replay_tables_cache:
+        _replay_tables_cache[lang.code] = (
+            frozenset(t for w in lang.replay_filler for t in _tokens(w)),
+            frozenset(tuple(_tokens(" ".join(trigger)))
+                      for trigger in lang.replay_triggers))
+    return _replay_tables_cache[lang.code]
+
+
 def _is_replay_request(toks: list[str]) -> bool:
+    filler, triggers = _replay_tables()
     i, j = 0, len(toks)
-    while i < j and toks[i] in _REPLAY_FILLER:
+    while i < j and toks[i] in filler:
         i += 1
-    while j > i and toks[j - 1] in _REPLAY_FILLER:
+    while j > i and toks[j - 1] in filler:
         j -= 1
-    return tuple(toks[i:j]) in _REPLAY_TRIGGERS
+    return tuple(toks[i:j]) in triggers
 
 
 @dataclass
@@ -359,7 +387,7 @@ class SpeechScheduler:
                  stale_after: float = 60.0, echo_window: float = 6.0,
                  batch_settle: float = 2.0, ack_timeout: float = 45.0,
                  transport_ready: Optional[Callable[[], bool]] = None,
-                 bridges: tuple = BRIDGES, cancel_words: tuple = CANCEL_WORDS,
+                 bridges: tuple = BRIDGES, cancel_words: Optional[tuple] = None,
                  clock: Callable[[], float] = time.monotonic):
         """`clock` drives scheduling decisions only; `wait_for` and
         `open_cancel_window` sleep in real time. `transport_ready` says whether
@@ -381,7 +409,12 @@ class SpeechScheduler:
         self.stale_after = stale_after
         self.echo_window = echo_window
         self.bridges = bridges
-        self.cancel_words = tuple(cancel_words)
+        # Not given: the words of the language in use (see language.py),
+        # which for English is CANCEL_WORDS itself. Stored as `_tokens` would
+        # return them, because that is what they are compared against.
+        if cancel_words is None:
+            cancel_words = language.current().cancel_words or CANCEL_WORDS
+        self.cancel_words = tuple(" ".join(_tokens(w)) for w in cancel_words)
         self._next_id = 1
         self._current: Optional[Utterance] = None
         self._paused: Optional[Utterance] = None
@@ -995,7 +1028,7 @@ class SpeechScheduler:
         if not self._user_silent(now) or not self._transport_ready():
             return
         if self._unread:
-            text = f"{UNREAD_PREFIX} " + " ".join(self._unread)
+            text = f"{language.t(UNREAD_PREFIX)} " + " ".join(self._unread)
             self._unread.clear()
             u = self._new(Priority.URGENT, "say", immediate=True)
             self._fill(u, text)
@@ -1115,7 +1148,7 @@ class SpeechScheduler:
         """Resume after a preemption: a bridge phrase goes in front of the first
         unplayed chunk. Chunks own their audio, so shifting positions is safe even
         while synthesis for later chunks is still running."""
-        bridge = Chunk(self.bridges[u.resumes % len(self.bridges)])
+        bridge = Chunk(language.t(self.bridges[u.resumes % len(self.bridges)]))
         u.resumes += 1
         log.info("speech: resuming utterance %s (resume %d of %d) from chunk %d",
                  u.id, u.resumes, MAX_RESUMES, u.played + 1)
@@ -1157,7 +1190,7 @@ class SpeechScheduler:
                 if not await self._send({"type": "text", "text": chunk.text}, u):
                     return False
                 if chunk.notice:
-                    await self._send({"type": "text", "text": "My voice is failing, sir."}, u)
+                    await self._send({"type": "text", "text": language.t("My voice is failing, sir.")}, u)
                 progressed = True
                 continue
             await self._set_speaking(True)

@@ -168,6 +168,10 @@ socket.onMessage((msg) => {
 
   if (type === "config") {
     muteMicDuringSpeech = Boolean(msg.muteMicDuringSpeech);
+    if (typeof msg.lang === "string" && msg.lang) {
+      voiceInput.setLang(msg.lang);
+      document.documentElement.lang = msg.lang;
+    }
   } else if (type === "audio") {
     const data = msg.data as string;
     if (data) {

@@ -165,13 +165,14 @@ cd frontend && npm install && cd ..
 ```
 
 **Fill in the `.env`.** `.env.example` documents the lot; the short version is
-one required key and three optional ones:
+one required key and four optional ones:
 
 ```env
 FISH_API_KEY=...            # required, no fallback
 # JARVIS_BRAIN_MODEL=sonnet # optional: the brain's model
 # FISH_VOICE_ID=...         # optional: a different voice
 # USER_NAME=Tony            # optional: what he calls you
+# JARVIS_LANGUAGE=es-MX     # optional: Mexican Spanish instead of English
 ```
 
 **Generate the certificates.** These are not optional:
@@ -331,6 +332,7 @@ invariants hold throughout it:
 | `jarvis_mcp.py` | Stdio MCP server exposing JARVIS's tools to the brain |
 | `speech.py` | Sentence splitting, echo rejection, barge-in, and the queue of everything JARVIS says |
 | `tts.py` | Fish Audio synthesis — the whole voice, in one small file |
+| `language.py` | `JARVIS_LANGUAGE`: what a second language overrides, and the Mexican Spanish that does |
 | `builds.py` | Spec, brief and plan: the pipeline behind a real multi-hour build |
 | `specs.py` | The review surface — reading a design back by numbered section, and approving it |
 | `run_store.py` | SQLite `runs` / `run_events`, and the six-value status enum |
@@ -418,6 +420,15 @@ it and bend it to what you do. The seams are deliberately obvious:
   other than a British butler, this is the only file you need to touch.
 - **His voice** is `tts.py`: one HTTP call, sixty-odd lines. Swap in a
   different provider, or a local model, without touching anything else.
+- **His language** is `JARVIS_LANGUAGE` — `en` (the default) or `es-MX`, in
+  `.env` or under Settings → Language, applied at the next start. It moves
+  everything at once: the language Chrome transcribes, the language the brain
+  answers in, the lines he speaks without the brain, the words that cancel
+  and repeat, and the voice (a Spanish Fish Audio model, unless you set
+  `FISH_VOICE_ID` yourself). In Spanish he says "señor", and "empieza de
+  cero" is the phrase that clears his context. A third language is one more
+  `Language` in `language.py`; a test fails for every spoken line it leaves
+  in English.
 - **His tools** are the `TOOL_HANDLERS` table in `server.py`, exposed to the
   brain through `jarvis_mcp.py` and gated by an allowlist in `brain.py`.
   Adding one means writing a handler and naming it in those two places.

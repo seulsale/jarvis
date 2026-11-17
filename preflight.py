@@ -38,6 +38,7 @@ from pathlib import Path
 from typing import Optional
 
 import claude_env
+import language
 import screen
 
 log = logging.getLogger("jarvis.preflight")
@@ -677,28 +678,28 @@ def _phrase_for(check: Check) -> str:
     name, msg = check.name, check.message
     if name == "claude_cli":
         if "not on PATH" in msg:
-            return "Claude Code isn't installed"
+            return language.t("Claude Code isn't installed")
         if "older than" in msg:
-            return "Claude Code needs updating"
-        return "Claude Code's version couldn't be checked"
+            return language.t("Claude Code needs updating")
+        return language.t("Claude Code's version couldn't be checked")
     if name == "claude_login":
         if "not logged in" in msg:
-            return "Claude Code isn't logged in"
-        return "Claude Code's login couldn't be checked"
+            return language.t("Claude Code isn't logged in")
+        return language.t("Claude Code's login couldn't be checked")
     if name == "accessibility":
         if "not granted Accessibility" in msg:
-            return "I don't have Accessibility permission"
-        return "Accessibility couldn't be checked"
+            return language.t("I don't have Accessibility permission")
+        return language.t("Accessibility couldn't be checked")
     if name == "screen_recording":
         if "not been granted" in msg:
-            return "I don't have Screen Recording permission"
-        return "Screen Recording couldn't be checked"
+            return language.t("I don't have Screen Recording permission")
+        return language.t("Screen Recording couldn't be checked")
     if name == "fish_api_key":
-        return "I have no Fish Audio key"
+        return language.t("I have no Fish Audio key")
     if name == "anthropic_key_leftover":
-        return "there's a leftover Anthropic API key in the environment"
+        return language.t("there's a leftover Anthropic API key in the environment")
     if name == "cross_session_inbound":
-        return "cross-session steering isn't enabled"
+        return language.t("cross-session steering isn't enabled")
     return check.message
 
 
@@ -716,11 +717,11 @@ def spoken_summary(checks: list["Check"]) -> str:
     phrases = [_phrase_for(c) for c in issues]
 
     if len(phrases) == 1:
-        return f"One thing needs attention, sir: {phrases[0]}."
+        return language.t("One thing needs attention, sir: {issue}.",
+                          issue=phrases[0])
     if len(phrases) == 2:
-        return f"Two things need attention, sir: {phrases[0]}, and {phrases[1]}."
-    return (
-        f"{len(phrases)} things need attention, sir: "
-        + ", ".join(phrases[:-1])
-        + f", and {phrases[-1]}."
-    )
+        return language.t("Two things need attention, sir: {first}, and {second}.",
+                          first=phrases[0], second=phrases[1])
+    return language.t("{count} things need attention, sir: {issues}, and {last}.",
+                      count=len(phrases), issues=", ".join(phrases[:-1]),
+                      last=phrases[-1])

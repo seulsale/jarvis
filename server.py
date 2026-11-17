@@ -83,6 +83,7 @@ from run_executor import RunExecutor
 import data_paths
 import dialog
 import jarvis_memory
+import language
 import notifier
 import tts
 from brain import Brain, BrainConfig, MAX_BOOT_PROJECTS
@@ -96,7 +97,11 @@ log = logging.getLogger("jarvis")
 # ---------------------------------------------------------------------------
 
 FISH_API_KEY = os.getenv("FISH_API_KEY", "")
-FISH_VOICE_ID = os.getenv("FISH_VOICE_ID", "612b878b113047d9a770c069c8b4fdfe")  # JARVIS (MCU)
+# A voice the user set always wins. Otherwise it is the voice of the language
+# he is speaking (see language.py), and for English that is JARVIS (MCU).
+FISH_VOICE_ID = (os.getenv("FISH_VOICE_ID", "").strip()
+                 or language.current().voice_id
+                 or "612b878b113047d9a770c069c8b4fdfe")
 FISH_API_URL = "https://api.fish.audio/v1/tts"
 USER_NAME = os.getenv("USER_NAME", "sir")
 _SKIP_PERMISSIONS = os.getenv("JARVIS_SKIP_PERMISSIONS", "true").lower() not in ("0", "false", "no")
@@ -343,7 +348,8 @@ def apply_speech_corrections(text: str) -> str:
     """Fix common speech-to-text errors before processing."""
     import re as _stt_re
     result = text
-    for pattern, replacement in STT_CORRECTIONS.items():
+    corrections = language.current().stt_corrections or STT_CORRECTIONS
+    for pattern, replacement in corrections.items():
         result = _stt_re.sub(pattern, replacement, result, flags=_stt_re.IGNORECASE)
     return result
 
@@ -642,6 +648,59 @@ def _fmt_reset(ts) -> str:
     return f"{when.strftime('%A %-d %B')} at {clock}"
 
 
+# --- what he says himself, in the language he is speaking ----------------
+#
+# Every line below that reaches `speech.say` without passing through the
+# brain goes through `_t`, with the English sentence as its key — see
+# language.py. The sentences tools RETURN to the brain do not: the model reads
+# those and reports them in the user's language, so they stay English, and so
+# do the helpers they share (`_fmt_reset`, `_cap_listing`, `_phrase_needs`).
+# The `_spoken_*` functions here are those helpers for the one case where the
+# words go straight to the speaker.
+_t = language.t
+
+
+def _spoken_reset(ts) -> str:
+    """`_fmt_reset`, for a line he speaks himself."""
+    local = language.current().reset_time
+    if local is None:
+        return _fmt_reset(ts)
+    try:
+        when = datetime.fromtimestamp(float(ts))
+    except (TypeError, ValueError, OSError, OverflowError):
+        return _t("later")
+    return local(when, datetime.now())
+
+
+def _spoken_number(n: int) -> str:
+    return (language.current().number_words or _NUMBER_WORDS).get(n, str(n))
+
+
+def _spoken_listing(items: list[str]) -> str:
+    return (language.current().listing or _cap_listing)(items)
+
+
+def _spoken_name(item, fallback: str = "that session") -> str:
+    """`_said_name`, with the fallback in his language. The name itself is
+    never translated: it is what the user says back to pick the session."""
+    return _said_name(item, _t(fallback))
+
+
+def _spoken_needs(reason: str) -> str:
+    """`_phrase_needs`, for the URGENT interrupt.
+
+    Translated from what `_phrase_needs` RETURNS, never from the raw reason:
+    that string is another process's, and the wall it has to pass is in
+    there. A reason nobody has a phrase for keeps its own (already plain)
+    words after the verb.
+    """
+    phrase = _phrase_needs(reason)
+    said = _t(phrase)
+    if said != phrase:
+        return said
+    return _t("waiting on {what}", what=phrase.removeprefix("waiting on "))
+
+
 # True but useless: "down" names neither cause nor remedy. When the brain's
 # failure is classified "auth" (brain.py's _classify_fatal_failure), speak
 # something the user can actually act on instead. Shared by _on_brain_state
@@ -688,12 +747,15 @@ FRESH_START_LINE = "Cleared, sir — nothing of that conversation left. Go ahead
 def _is_fresh_start(text: str) -> bool:
     """Whether the user just asked for a clean generation."""
     t = " ".join(_action_words(text))
-    return any(p in t for p in FRESH_START_PHRASES)
+    phrases = language.current().fresh_start_phrases or FRESH_START_PHRASES
+    # Through the same words on both sides: a phrase written "conversación
+    # nueva" has to meet a transcript that may or may not carry the accent.
+    return any(" ".join(_action_words(p)) in t for p in phrases)
 
 
 def _action_words(text: str) -> list[str]:
     import re as _re
-    return _re.findall(r"[a-z]+", text.lower())
+    return _re.findall(r"[a-z]+", language.fold(text).lower())
 
 
 async def _on_brain_state(state: str, info: dict) -> None:
@@ -707,18 +769,22 @@ async def _on_brain_state(state: str, info: dict) -> None:
         now = time.time()
         if now - _brain_notice_at["restarting"] > 60:
             _brain_notice_at["restarting"] = now
-            await speech.say("Rebooting my language systems, one moment.", Priority.NORMAL)
+            await speech.say(_t("Rebooting my language systems, one moment."), Priority.NORMAL)
     elif state == "failed":
-        line = (_AUTH_BRAIN_DOWN_LINE if info.get("failure_reason") == "auth"
-               else "My language systems are down, sir. Check the server log.")
+        line = (_t(_AUTH_BRAIN_DOWN_LINE) if info.get("failure_reason") == "auth"
+               else _t("My language systems are down, sir. Check the server log."))
         await speech.say(line, Priority.URGENT, immediate=True)
     elif state == "rate_limited":
-        await speech.say(f"I've hit the usage limit until {_fmt_reset(info.get('resets_at'))}, sir.",
+        await speech.say(_t("I've hit the usage limit until {when}, sir.",
+                            when=_spoken_reset(info.get("resets_at"))),
                          Priority.NORMAL)
 
 
 def _greeting() -> str:
     hour = datetime.now().hour
+    local = language.current().greeting
+    if local is not None:
+        return local(hour)
     if hour < 12:
         return "Good morning, sir."
     if hour < 17:
@@ -1070,11 +1136,11 @@ async def _start_fresh() -> None:
         except Exception as e:
             log.error(f"fresh start failed: {e}", exc_info=True)
             if speech is not None:
-                await speech.say("I couldn't clear it, sir.", Priority.NORMAL)
+                await speech.say(_t("I couldn't clear it, sir."), Priority.NORMAL)
             return
     log.info("fresh start: generation discarded at the user's request")
     if speech is not None:
-        await speech.say(FRESH_START_LINE, Priority.NORMAL)
+        await speech.say(_t(FRESH_START_LINE), Priority.NORMAL)
 
 
 async def _maybe_rotate() -> None:
@@ -1105,7 +1171,7 @@ async def _maybe_rotate() -> None:
         # Say so before the pause, not after it: everything below this line
         # takes seconds during which nothing answers.
         try:
-            await _voice_emit({"type": "notice", "text": ROTATION_BUSY_LINE})
+            await _voice_emit({"type": "notice", "text": _t(ROTATION_BUSY_LINE)})
             # The orb dims and slows for the duration; see the "compacting"
             # state in frontend/src/orb.ts.
             await _voice_emit({"type": "status", "state": "compacting"})
@@ -1252,16 +1318,17 @@ async def _announce_needs_you(event: dict) -> None:
     # project, and `_plain_name` forbids a space, so it erased nine real
     # names out of ten in the one interrupt whose whole job is to say WHICH
     # session wants him. See `_said_name` for the wall that fits this field.
-    name = _said_name(s, "A session")
+    name = _spoken_name(s, "A session")
     needs = s.get("needs")
     if needs:
-        reason = _phrase_needs(needs)
+        reason = _spoken_needs(needs)
         if s.get("needs_a_human_hand"):
-            line = f"{name} is {reason}, sir — that one needs your own keystroke."
+            line = _t("{name} is {reason}, sir — that one needs your own keystroke.",
+                      name=name, reason=reason)
         else:
-            line = f"{name} is {reason}, sir."
+            line = _t("{name} is {reason}, sir.", name=name, reason=reason)
     else:
-        line = f"{name} has stopped and wants you, sir."
+        line = _t("{name} has stopped and wants you, sir.", name=name)
     try:
         await speech.say(line, Priority.URGENT)
     except Exception as e:
@@ -1313,9 +1380,10 @@ def _cap_listing(items: list[str]) -> str:
 
 def _session_batch_line(names: list[str]) -> str:
     if len(names) == 1:
-        return f"{names[0]} has finished, sir."
-    return (f"{_say_number(len(names)).capitalize()} conversations have "
-            f"finished, sir: {_cap_listing(names)}.")
+        return _t("{name} has finished, sir.", name=names[0])
+    return _t("{count} conversations have finished, sir: {names}.",
+              count=_spoken_number(len(names)).capitalize(),
+              names=_spoken_listing(names))
 
 
 def _run_batch_line(projects: list[str]) -> str:
@@ -1325,8 +1393,9 @@ def _run_batch_line(projects: list[str]) -> str:
     so "is done" is an honest report of success, not a euphemism for "ended".
     """
     if len(projects) == 1:
-        return f"The work in {projects[0]} is done, sir."
-    return f"Work in {_cap_listing(projects)} is done, sir."
+        return _t("The work in {project} is done, sir.", project=projects[0])
+    return _t("Work in {projects} is done, sir.",
+              projects=_spoken_listing(projects))
 
 
 async def _announce_batch() -> None:
@@ -1425,11 +1494,11 @@ async def _announce_run_stalled(run: dict, outcome: str) -> None:
         return
     project = _run_project(run)
     if outcome == stream_parser.STALLED:
-        line = (f"The work in {project} stopped to ask a question, sir, so "
-                f"nothing was built.")
+        line = _t("The work in {project} stopped to ask a question, sir, so "
+                  "nothing was built.", project=project)
     else:
-        line = (f"The work in {project} finished, sir, but I can't see that "
-                f"it changed anything.")
+        line = _t("The work in {project} finished, sir, but I can't see that "
+                  "it changed anything.", project=project)
     try:
         await speech.say(line, Priority.URGENT)
     except Exception as e:
@@ -1442,9 +1511,9 @@ async def _announce_run_failure(run: dict) -> None:
         return
     project = _run_project(run)
     if run.get("status") == run_store.RunStatus.TIMED_OUT:
-        line = f"The work in {project} ran out of time, sir."
+        line = _t("The work in {project} ran out of time, sir.", project=project)
     else:
-        line = f"The work in {project} failed, sir."
+        line = _t("The work in {project} failed, sir.", project=project)
     try:
         await speech.say(line, Priority.URGENT)
     except Exception as e:
@@ -1630,11 +1699,11 @@ async def _handle_utterance(text: str) -> None:
     await _voice_emit({"type": "status", "state": "thinking"})
     if not brain_instance.ready:
         if brain_instance.failed:
-            line = (_AUTH_BRAIN_DOWN_LINE
+            line = (_t(_AUTH_BRAIN_DOWN_LINE)
                     if getattr(brain_instance, "failure_reason", None) == "auth"
-                    else "My language systems are down, sir.")
+                    else _t("My language systems are down, sir."))
         else:
-            line = "One moment, sir — my language systems are still starting."
+            line = _t("One moment, sir — my language systems are still starting.")
         await speech.say(line, Priority.NORMAL)
         return
     utt = speech.begin_turn()
@@ -1650,17 +1719,18 @@ async def _handle_utterance(text: str) -> None:
                 await speech.end_turn(utt)  # a turn that never ends would wedge the mouth
         except Exception as e:
             log.error(f"brain turn failed: {e}", exc_info=True)
-            await speech.say("I lost my train of thought, sir. Say that again?", Priority.NORMAL)
+            await speech.say(_t("I lost my train of thought, sir. Say that again?"), Priority.NORMAL)
             return
         if result.stop_reason == "rate_limited":
             resets = (result.rate_limit or {}).get("resetsAt")
-            await speech.say(f"I've hit the usage limit until {_fmt_reset(resets)}, sir.", Priority.NORMAL)
+            await speech.say(_t("I've hit the usage limit until {when}, sir.",
+                                when=_spoken_reset(resets)), Priority.NORMAL)
         elif result.stop_reason == "error":
             log.error(f"brain error: {result.error}")
-            await speech.say("My language systems returned an error, sir. Check the server log.",
+            await speech.say(_t("My language systems returned an error, sir. Check the server log."),
                              Priority.NORMAL)
         elif result.stop_reason in ("timeout", "died", "not_running"):
-            await speech.say("I lost my train of thought, sir. Say that again?", Priority.NORMAL)
+            await speech.say(_t("I lost my train of thought, sir. Say that again?"), Priority.NORMAL)
         elif not result.text.strip():
             await _voice_emit({"type": "status", "state": "idle"})
         log.info(f"JARVIS: {result.text.strip()[:300]}")
@@ -1860,7 +1930,7 @@ async def tts_test():
     GET is the one method OriginGuard cannot cover, so as a GET this was an
     <img> tag on any page the user visited, in a loop.
     """
-    audio = await synthesize_speech("Testing audio, sir.")
+    audio = await synthesize_speech(_t("Testing audio, sir."))
     if audio:
         return {"audio": base64.b64encode(audio).decode()}
     return {"audio": None, "error": "TTS failed"}
@@ -3355,8 +3425,8 @@ def _inbound_caveat() -> str:
     """The half-sentence that stops "sent" from being a lie."""
     if _inbound_accepted():
         return ""
-    return (" It'll ask you to approve it first — say the word and I'll set "
-            "your sessions to accept them.")
+    return _t(" It'll ask you to approve it first — say the word and I'll set "
+              "your sessions to accept them.")
 
 
 async def _perform_staged_steers() -> None:
@@ -3408,7 +3478,8 @@ async def _perform_steer(item: _StagedSteer) -> None:
         if speech is None:
             record("no_voice")             # the mouth went away between turns
             return
-        utt = await speech.say(f"Telling {_said_name(item)}: {item.prompt}",
+        utt = await speech.say(_t("Telling {name}: {prompt}",
+                                  name=_spoken_name(item), prompt=item.prompt),
                                Priority.NORMAL)
         # Wait for the read-back to actually finish PLAYING (not merely be
         # queued — see READBACK_TIMEOUT) before opening the cancel window.
@@ -3423,7 +3494,7 @@ async def _perform_steer(item: _StagedSteer) -> None:
                 record("readback_failed")
                 return
             record("cancelled_by_user")
-            await speech.say("Cancelled, sir.", Priority.NORMAL)
+            await speech.say(_t("Cancelled, sir."), Priority.NORMAL)
             return
         if not heard:
             # TTS wedged or the transport was abandoned mid-utterance: never
@@ -3432,7 +3503,7 @@ async def _perform_steer(item: _StagedSteer) -> None:
             return
         if await speech.open_cancel_window(STEER_CANCEL_WINDOW):
             record("cancelled_by_user")
-            await speech.say("Cancelled, sir.", Priority.NORMAL)
+            await speech.say(_t("Cancelled, sir."), Priority.NORMAL)
             return
 
         outcome = await asyncio.to_thread(
@@ -3451,15 +3522,15 @@ async def _perform_steer(item: _StagedSteer) -> None:
             # here, so it is no longer asserted — and when the setting says
             # the message WILL need approving, that is said in the same
             # breath rather than left for the user to discover.
-            await speech.say(f"Passed to {_said_name(item)}, sir."
+            await speech.say(_t("Passed to {name}, sir.", name=_spoken_name(item))
                              + _inbound_caveat(), Priority.NORMAL)
         elif outcome == session_steer.NOT_LIVE:
             await speech.say(
-                f"{_said_name(item)} didn't answer its socket, sir — it may "
-                f"have just exited.", Priority.NORMAL)
+                _t("{name} didn't answer its socket, sir — it may have just "
+                   "exited.", name=_spoken_name(item)), Priority.NORMAL)
         else:
-            await speech.say(f"I couldn't deliver that to {_said_name(item)}, "
-                             f"sir.", Priority.NORMAL)
+            await speech.say(_t("I couldn't deliver that to {name}, sir.",
+                                name=_spoken_name(item)), Priority.NORMAL)
     except Exception:
         record("failed")                   # the audit trail must never have a gap
         raise
@@ -3508,9 +3579,10 @@ async def _perform_command(item: _StagedCommand) -> None:
         # undocumented command is not refused, it is flagged out loud, and the
         # user gets the cancel window to act on it.
         caveat = "" if item.documented else \
-            " That isn't a command the project documents, mind."
+            _t(" That isn't a command the project documents, mind.")
         utt = await speech.say(
-            f"Running {item.command} in {item.project}, sir.{caveat}",
+            _t("Running {command} in {project}, sir.",
+               command=item.command, project=item.project) + caveat,
             Priority.NORMAL)
         heard = await speech.wait_for(utt, timeout=READBACK_TIMEOUT)
         if utt.was_cancelled:
@@ -3518,14 +3590,14 @@ async def _perform_command(item: _StagedCommand) -> None:
                 record("readback_failed")
                 return
             record("cancelled_by_user")
-            await speech.say("Cancelled, sir.", Priority.NORMAL)
+            await speech.say(_t("Cancelled, sir."), Priority.NORMAL)
             return
         if not heard:
             record("readback_failed")
             return
         if await speech.open_cancel_window(STEER_CANCEL_WINDOW):
             record("cancelled_by_user")
-            await speech.say("Cancelled, sir.", Priority.NORMAL)
+            await speech.say(_t("Cancelled, sir."), Priority.NORMAL)
             return
 
         # `cd` into the project first: a start command means nothing in the
@@ -3537,10 +3609,10 @@ async def _perform_command(item: _StagedCommand) -> None:
         if result.get("success"):
             record("ran")
             await speech.say(
-                f"Running in a Terminal window, sir.", Priority.NORMAL)
+                _t("Running in a Terminal window, sir."), Priority.NORMAL)
         else:
             record("failed")
-            await speech.say("Terminal wouldn't open, sir.", Priority.NORMAL)
+            await speech.say(_t("Terminal wouldn't open, sir."), Priority.NORMAL)
     except Exception:
         record("failed")                   # the audit trail must never have a gap
         raise
@@ -3602,7 +3674,7 @@ async def _perform_dialog(item: _StagedDialog) -> None:
     `wait_for` returns False for a cancel and a timeout alike.
     """
     recorded = False
-    said = dialog.spoken_key(item.key)
+    said = _t(dialog.spoken_key(item.key))
 
     def record(outcome: str) -> None:
         nonlocal recorded
@@ -3619,45 +3691,46 @@ async def _perform_dialog(item: _StagedDialog) -> None:
         # The read-back names the key AND warns about the focus theft, because
         # the window coming forward is the part that interrupts the user.
         utt = await speech.say(
-            f"Pressing {said} on {_said_name(item)} — this will bring that "
-            f"window forward.", Priority.NORMAL)
+            _t("Pressing {key} on {name} — this will bring that window "
+               "forward.", key=said, name=_spoken_name(item)), Priority.NORMAL)
         heard = await speech.wait_for(utt, timeout=READBACK_TIMEOUT)
         if utt.was_cancelled:
             if getattr(utt, "was_abandoned", False):
                 record("readback_failed")
                 return
             record("cancelled_by_user")
-            await speech.say("Cancelled, sir.", Priority.NORMAL)
+            await speech.say(_t("Cancelled, sir."), Priority.NORMAL)
             return
         if not heard:
             record("readback_failed")
             return
         if await speech.open_cancel_window(STEER_CANCEL_WINDOW):
             record("cancelled_by_user")
-            await speech.say("Cancelled, sir.", Priority.NORMAL)
+            await speech.say(_t("Cancelled, sir."), Priority.NORMAL)
             return
 
         outcome = await dialog.answer(item.pid, item.key)
         record(outcome)
         if outcome == dialog.SENT:
-            await speech.say(f"Pressed {said} on {_said_name(item)}.",
-                             Priority.NORMAL)
+            await speech.say(_t("Pressed {key} on {name}.", key=said,
+                                name=_spoken_name(item)), Priority.NORMAL)
         elif outcome == dialog.NOT_FOUND:
             await speech.say(
-                f"{_said_name(item)} isn't in a Terminal window I can reach, "
-                f"sir — another application is hosting it, so that one needs "
-                f"your own hand.", Priority.NORMAL)
+                _t("{name} isn't in a Terminal window I can reach, sir — "
+                   "another application is hosting it, so that one needs "
+                   "your own hand.", name=_spoken_name(item)), Priority.NORMAL)
         elif outcome == dialog.NOT_PERMITTED:
             await speech.say(
-                "macOS won't let me send keystrokes, sir — I'd need accessibility "
-                "permission in System Settings.", Priority.NORMAL)
+                _t("macOS won't let me send keystrokes, sir — I'd need "
+                   "accessibility permission in System Settings."),
+                Priority.NORMAL)
         elif outcome == dialog.NO_TTY:
             await speech.say(
-                f"{_said_name(item)} has no terminal of its own any more, "
-                f"sir — I pressed nothing.", Priority.NORMAL)
+                _t("{name} has no terminal of its own any more, sir — I "
+                   "pressed nothing.", name=_spoken_name(item)), Priority.NORMAL)
         else:
-            await speech.say(f"I couldn't press that for {_said_name(item)}, "
-                             f"sir.", Priority.NORMAL)
+            await speech.say(_t("I couldn't press that for {name}, sir.",
+                                name=_spoken_name(item)), Priority.NORMAL)
     except Exception:
         record("failed")                   # the audit trail must never have a gap
         raise
@@ -6578,7 +6651,7 @@ async def voice_handler(ws: WebSocket):
         {"type": "played", "utt": 3, "idx": 1}      one audio chunk finished playing
 
     Server -> Client:
-        {"type": "config", "muteMicDuringSpeech": false}
+        {"type": "config", "muteMicDuringSpeech": false, "lang": "en-US"}
         {"type": "audio", "utt": 3, "idx": 1, "data": "<base64 mp3>", "text": "..."}
         {"type": "stop"}                             halt playback, empty the queue
         {"type": "drop_queued"}                      keep the playing chunk, drop the rest
@@ -6594,7 +6667,8 @@ async def voice_handler(ws: WebSocket):
         # Through this client's own queue, not straight down the socket, so
         # the opening frames cannot be overtaken by a broadcast that lands
         # while they are in flight.
-        _enqueue(queue, {"type": "config", "muteMicDuringSpeech": MUTE_MIC_DURING_SPEECH})
+        _enqueue(queue, {"type": "config", "muteMicDuringSpeech": MUTE_MIC_DURING_SPEECH,
+                         "lang": language.current().recognition})
         _enqueue(queue, {"type": "status", "state": "idle"})
 
         global _last_greeting_time
@@ -6662,7 +6736,7 @@ async def voice_handler(ws: WebSocket):
                     # with different words. Never routed to _handle_utterance.
                     log.info(f"User (replay): {text}")
                     if not await speech.replay_last():
-                        await speech.say(NOTHING_TO_REPLAY_LINE, Priority.NORMAL)
+                        await speech.say(_t(NOTHING_TO_REPLAY_LINE), Priority.NORMAL)
                     continue
                 if verdict != "speech":
                     # Say WHY, so a dropped sentence can be diagnosed from the
@@ -6702,6 +6776,7 @@ async def voice_handler(ws: WebSocket):
 # a restart.
 SETTABLE_ENV_KEYS = frozenset({
     "FISH_API_KEY", "FISH_VOICE_ID", "USER_NAME", "HONORIFIC",
+    language.ENV_VAR,
 })
 
 # A value may not carry anything that ends the line it is written on.
@@ -6731,6 +6806,17 @@ SETTABLE_ENV_KEYS = frozenset({
 # characters, and the name — the one that reaches the prompt — gets the
 # tighter one. Held against SETTABLE_ENV_KEYS itself by tests/test_bounds.py,
 # so a key added later is bounded the day it is added.
+# The language is read live (`language.current()`), and it is five things at
+# once: the lines he speaks himself would change the moment it was saved,
+# while the brain's prompt, the voice and the recogniser kept the old one
+# until a restart — a Spanish sentence in an English voice, for as long as
+# that took. So it is written to the file and held here, and `api_restart`
+# puts it into the environment it hands to the next process. (It has to:
+# `execv` keeps the environment, and the boot loader's `setdefault` would
+# otherwise let the OLD value win over the file it just read.)
+ENV_KEYS_APPLIED_AT_RESTART = frozenset({language.ENV_VAR})
+_env_pending_restart: dict[str, str] = {}
+
 ENV_VALUE_MAX_CHARS = 500
 ENV_NAME_KEYS = frozenset({"USER_NAME", "HONORIFIC"})
 ENV_NAME_MAX_CHARS = 64
@@ -6761,6 +6847,11 @@ def _env_value_problem(key: str, value: str) -> str | None:
         return "A setting cannot contain a control character"
     if _parse_env_lines(f"{key}={value}") != [(key, value)]:
         return "A setting cannot begin or end with a space or a quote"
+    # The language is a choice, not free text: what it selects is appended to
+    # the brain's system prompt, so it may only ever name one of ours.
+    if key == language.ENV_VAR and language.resolve(value) is None:
+        return ("That is not a language JARVIS speaks — choose one of: "
+                + ", ".join(language.LANGUAGES))
     return None
 
 
@@ -6827,7 +6918,10 @@ def _write_env_key(key: str, value: str) -> None:
     if not found:
         new_lines.append(f"{key}={value}")
     _env_file_path().write_text("\n".join(new_lines) + "\n")
-    os.environ[key] = value
+    if key in ENV_KEYS_APPLIED_AT_RESTART:
+        _env_pending_restart[key] = value
+    else:
+        os.environ[key] = value
 
 class KeyUpdate(BaseModel):
     key_name: str
@@ -6839,6 +6933,8 @@ class KeyTest(BaseModel):
 class PreferencesUpdate(BaseModel):
     user_name: str = ""
     honorific: str = "sir"
+    # None: a client that predates the setting, and nothing is written.
+    language: Optional[str] = None
 
 @app.post("/api/settings/keys")
 async def api_settings_keys(body: KeyUpdate):
@@ -6891,6 +6987,11 @@ async def api_get_preferences():
     return {
         "user_name": env_dict.get("USER_NAME", ""),
         "honorific": env_dict.get("HONORIFIC", "sir"),
+        # What the file says, which is what the NEXT start will speak — the
+        # running server keeps the language it started in.
+        "language": (language.resolve(env_dict.get(language.ENV_VAR))
+                     or language.DEFAULT).code,
+        "languages": sorted(language.LANGUAGES),
     }
 
 @app.post("/api/settings/preferences")
@@ -6898,13 +6999,17 @@ async def api_save_preferences(body: PreferencesUpdate):
     # Validate both before writing either, so a bad honorific cannot leave
     # the name half-saved.
     try:
-        for key, value in (("USER_NAME", body.user_name),
-                           ("HONORIFIC", body.honorific)):
+        settings = [("USER_NAME", body.user_name), ("HONORIFIC", body.honorific)]
+        if body.language is not None:
+            settings.append((language.ENV_VAR, body.language))
+        for key, value in settings:
             problem = _env_value_problem(key, value)
             if problem:
                 raise ValueError(problem)
-        _write_env_key("USER_NAME", body.user_name)
-        _write_env_key("HONORIFIC", body.honorific)
+        for key, value in settings:
+            if key == language.ENV_VAR:
+                value = language.resolve(value).code     # "spanish" -> "es-MX"
+            _write_env_key(key, value)
     except ValueError as e:
         return JSONResponse({"success": False, "error": str(e)}, status_code=400)
     return {"success": True}
@@ -6925,6 +7030,7 @@ async def api_restart():
         # microphone permission per origin INCLUDING the port, so the user
         # lost their mic and had no idea why. execv preserves the environment,
         # so JARVIS_DATA_DIR and friends carry over on their own.
+        os.environ.update(_env_pending_restart)
         os.execv(sys.executable, [sys.executable, __file__, *sys.argv[1:]])
     asyncio.create_task(_restart())
     return {"status": "restarting"}
